@@ -4,6 +4,25 @@ MONKEYPARSER="$MONKEYDEV_PATH/bin/monkeyparser"
 CREATE_IPA="$MONKEYDEV_PATH/bin/createIPA.command"
 CLASS_DUMP_TOOL="$MONKEYDEV_PATH/bin/class-dump"
 
+#for old version
+if [[ ! ${MONKEYDEV_INSERT_DYLIB} ]];then
+	MONKEYDEV_INSERT_DYLIB=YES
+fi
+if [[ ! ${MONKEYDEV_TARGET_APP} ]];then
+	MONKEYDEV_TARGET_APP="Optional"
+fi
+if [[ ! ${MONKEYDEV_ADD_SUBSTRATE} ]];then
+	MONKEYDEV_ADD_SUBSTRATE=YES
+fi
+
+function isRelease(){
+	if [ $CONFIGURATION == Release ]; then
+		return 0 #true
+	else
+		return 1 #false
+	fi
+}
+
 function panic() # args: exitCode, message...
 {
 	local exitCode=$1
@@ -16,115 +35,33 @@ function panic() # args: exitCode, message...
 	exit $exitCode
 }
 
-function codesign()
-{
-    for file in `ls "$1"`;
-    do
-		extension="${file#*.}"
-        if [[ -d "$1/$file" ]]; then
-			if [[ "$extension" == "framework" ]]; then
-        			/usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$1/$file"
-			else
-				codesign "$1/$file"
-			fi
-		elif [[ -f "$1/$file" ]]; then
-			if [[ "$extension" == "dylib" ]]; then
-        			/usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$1/$file"
-        	fi
-        fi
-    done
-}
-
 function checkApp(){
 	TARGET_APP_PATH="$1"
-	MACH_O_FILE_NAME=`plutil -convert xml1 -o - "$TARGET_APP_PATH/Info.plist" | grep -A1 Exec | tail -n1 | cut -f2 -d\> | cut -f1 -d\<`
-	MACH_O_FILE_PATH="$TARGET_APP_PATH/$MACH_O_FILE_NAME"
-	ARMV7=false
- 	ARM64=false
- 	FAT_FILE=false
- 	[[ $(lipo -info "$MACH_O_FILE_PATH" | grep armv7) == "" ]] || ARMV7=true
- 	[[ $(lipo -info "$MACH_O_FILE_PATH" | grep arm64) == "" ]] || ARM64=true
- 	[[ $(lipo -info "$MACH_O_FILE_PATH" | grep "Non-fat file") != "" ]] || FAT_FILE=true
- 	echo "has arm7 arch? $ARMV7"
- 	echo "has arm64 arch? $ARM64"
- 	echo "is fat file? $FAT_FILE"
- 	if [[ ! ARMV7 && ! ARM64 ]]; then
-  		panic 1 "The target does not contain armv7 or arm64 arch!!!"
- 	fi
- 	decrypted_num=$(otool -l "$MACH_O_FILE_PATH" | grep "cryptid 0" | wc -l | tr -d " ")
- 	echo "decrypted arch num? $decrypted_num"
- 	if [[ "$decrypted_num" == "0" ]]; then
- 		panic 1 "can't find decrypted arch!!!"
- 	fi
- 	if [[ "$decrypted_num" == "1" ]] && "$FAT_FILE"; then
- 		if "$ARMV7"; then
- 			lipo -thin armv7 $MACH_O_FILE_PATH -o $MACH_O_FILE_PATH
- 		fi
- 		if "$ARM64"; then
- 			lipo -thin arm64 $MACH_O_FILE_PATH -o $MACH_O_FILE_PATH
- 		fi
- 	fi
- 	#class_dump
- 	if [[ ! -f "$TARGET_APP_PATH"/md_class_dump ]] && [[ "${MONKEYDEV_CLASS_DUMP}" == "YES" ]]; then
- 		TARGET_DUMP_DIR="${SRCROOT}/$TARGET_NAME/$MACH_O_FILE_NAME"_Headers
- 		if [[ -d "$TARGET_DUMP_DIR" ]]; then
- 			rm -rf "$TARGET_DUMP_DIR" || true
- 		fi
- 		mkdir -p "$TARGET_DUMP_DIR"
 
- 		if "$FAT_FILE" && "$ARMV7" && "$ARM64" && [[ "$decrypted_num" == "1" ]]; then
- 			decrypted_arch="arm64"
- 			lipo -thin armv7 $MACH_O_FILE_PATH -o $TEMP_PATH/"$MACH_O_FILE_NAME"_armv7
-			lipo -thin arm64 $MACH_O_FILE_PATH -o $TEMP_PATH/"$MACH_O_FILE_NAME"_arm64
- 			[[ $(otool -l $TEMP_PATH/"$MACH_O_FILE_NAME"_armv7 | grep "cryptid 0") == "" ]] || decrypted_arch="armv7"
- 			[[ $(otool -l $TEMP_PATH/"$MACH_O_FILE_NAME"_arm64 | grep "cryptid 0") == "" ]] || decrypted_arch="arm64"
- 			echo "current decrypted arch: $decrypted_arch"
- 			"$CLASS_DUMP_TOOL" "$MACH_O_FILE_PATH" --arch "$decrypted_arch" -H -o "$TARGET_DUMP_DIR"
- 		else
- 			"$CLASS_DUMP_TOOL" "$MACH_O_FILE_PATH" -H -o "$TARGET_DUMP_DIR"
- 		fi
- 		echo "finsih_class_dump" >> "$TARGET_APP_PATH"/md_class_dump
- 	fi
+	# remove Plugin an Watch
+	 rm -rf "$TARGET_APP_PATH/PlugIns" || true
+	 rm -rf "$TARGET_APP_PATH/Watch" || true
 
- 	#restore_symbol
- 	if [[ ! -f "$TARGET_APP_PATH"/md_restore_symbol ]] && [[ "${MONKEYDEV_RESTORE_SYMBOL}" == "YES" ]]; then
- 		if "$FAT_FILE"; then
- 			if "$ARMV7" && "$ARM64"; then
- 				echo "fat: armv7 and arm64"
- 				lipo -thin armv7 "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7
-				lipo -thin arm64 "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64
-				"$MONKEYPARSER" restoresymbol -t "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7 -o "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7_with_symbol
-				"$MONKEYPARSER" restoresymbol -t "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64 -o "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64_with_symbol
-				lipo -create "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7_with_symbol "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64_with_symbol -o "$TEMP_PATH/$MACH_O_FILE_NAME"_with_symbol
-				cp -rf "$TEMP_PATH/$MACH_O_FILE_NAME"_with_symbol "$MACH_O_FILE_PATH"
-			elif "$ARMV7"; then
-				echo "fat: armv7"
-				lipo -thin armv7 "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7
-				"$MONKEYPARSER" restoresymbol -t "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7 -o "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7_with_symbol
-	 			cp -rf "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7_with_symbol "$MACH_O_FILE_PATH"
- 			elif "$ARM64"; then
- 				echo "fat: arm64"
- 				lipo -thin arm64 "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64
- 				"$MONKEYPARSER" restoresymbol -t "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64 -o "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64_with_symbol
-	 			cp -rf "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64_with_symbol "$MACH_O_FILE_PATH"
- 			fi
-	 	elif "$ARMV7"; then
-	 		echo "armv7"
-	 		"$MONKEYPARSER" restoresymbol -t "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_armv7_with_symbol
-	 		cp -rf $TEMP_PATH/"$MACH_O_FILE_NAME"_armv7_with_symbol "$MACH_O_FILE_PATH"
-	 	elif "$ARM64"; then
-	 		echo "arm64"
-	 		"$MONKEYPARSER" restoresymbol -t "$MACH_O_FILE_PATH" -o "$TEMP_PATH/$MACH_O_FILE_NAME"_arm64_with_symbol
-	 		cp -rf $TEMP_PATH/"$MACH_O_FILE_NAME"_arm64_with_symbol "$MACH_O_FILE_PATH"
-	 	fi
-	 	echo "finsih_restore_symbol" >> "$TARGET_APP_PATH"/md_restore_symbol
- 	fi
+	 rm -rf "${SRCROOT}/$TARGET_NAME/Target.plist"
+	 ln -s "$TARGET_APP_PATH/Info.plist" "${SRCROOT}/$TARGET_NAME/Target.plist"
+	 /usr/libexec/PlistBuddy -c 'Delete UISupportedDevices' "$TARGET_APP_PATH/Info.plist"
+
+	 TARGET_OUT_DIR="${SRCROOT}/$TARGET_NAME"
+
+	 VERIFY_RESULT=`export MONKEYDEV_CLASS_DUMP=${MONKEYDEV_CLASS_DUMP};MONKEYDEV_RESTORE_SYMBOL=${MONKEYDEV_RESTORE_SYMBOL};"$MONKEYPARSER" verify -t "$TARGET_APP_PATH" -o "$TARGET_OUT_DIR"`
+
+	if [[ $? -eq 16 ]]; then
+	  	panic 1 "$VERIFY_RESULT"
+	else
+	  	echo "$VERIFY_RESULT"
+	fi
 }
 
 BUILD_APP_PATH="$BUILT_PRODUCTS_DIR/$TARGET_NAME.app"
 
 function pack(){
 	echo "packing..."
+
 	# environment
 	MONKEYDEV_TOOLS="$MONKEYDEV_PATH/Tools/"
 	DEMOTARGET_APP_PATH="$MONKEYDEV_PATH/Resource/TargetApp.app"
@@ -133,23 +70,36 @@ function pack(){
 	CUSTOM_URL_TYPE=$(/usr/libexec/PlistBuddy -x -c "Print CFBundleURLTypes"  "${SRCROOT}/$TARGET_NAME/Info.plist")
 	CUSTOM_BUNDLE_ID="$PRODUCT_BUNDLE_IDENTIFIER"
 
+	#create tmp dir
 	rm -rf "$TEMP_PATH" || true
 	mkdir -p "$TEMP_PATH" || true
 
+	#latestbuild
 	rm -rf "${PROJECT_DIR}"/LatestBuild || true
 	ln -fhs "${BUILT_PRODUCTS_DIR}" "${PROJECT_DIR}"/LatestBuild
 	cp -rf "$CREATE_IPA" "${PROJECT_DIR}"/LatestBuild/
 
 	#deal ipa or app
-	TARGET_APP_PATH=$(find "$SRCROOT/$TARGET_NAME/TargetApp" -type d | grep ".app$" | head -n 1)
-	TARGET_IPA_PATH=$(find "$SRCROOT/$TARGET_NAME/TargetApp" -type f | grep ".ipa$" | head -n 1)
+	TARGET_APP_PATH=$(find "$SRCROOT/$TARGET_NAME" -type d | grep ".app$" | head -n 1)
+	TARGET_IPA_PATH=$(find "$SRCROOT/$TARGET_NAME" -type f | grep ".ipa$" | head -n 1)
 
-	if [[ "$TARGET_APP_PATH" == "" ]] && [[ "$TARGET_IPA_PATH" != "" ]]; then
+	if [[ $TARGET_APP_PATH ]]; then
+		cp -rf "$TARGET_APP_PATH" "$SRCROOT/$TARGET_NAME/TargetApp"
+	fi
+
+	if [[ ! $TARGET_APP_PATH ]] && [[ ! $TARGET_IPA_PATH ]] && [[ ${MONKEYDEV_TARGET_APP} != "Optional" ]]; then
+		echo "pulling decrypted ipa from jailbreak device......."
+		"$MONKEYDEV_PATH/bin/dump.py" ${MONKEYDEV_TARGET_APP} -o "$SRCROOT/$TARGET_NAME/TargetApp/TargetApp.ipa" || panic 1 "dump.py error"
+		TARGET_IPA_PATH=$(find "$SRCROOT/$TARGET_NAME/TargetApp" -type f | grep ".ipa$" | head -n 1)
+	fi
+
+	if [[ ! $TARGET_APP_PATH ]] && [[ $TARGET_IPA_PATH ]]; then
 		unzip -oqq "$TARGET_IPA_PATH" -d "$TEMP_PATH"
 		TEMP_APP_PATH=$(set -- "$TEMP_PATH/Payload/"*.app; echo "$1")
 		cp -rf "$TEMP_APP_PATH" "$SRCROOT/$TARGET_NAME/TargetApp/"
 	fi
 
+	#remove origin .app
 	rm -rf "$BUILD_APP_PATH" || true
 	mkdir -p "$BUILD_APP_PATH" || true
 
@@ -159,6 +109,7 @@ function pack(){
 		cp -rf "$TARGET_APP_PATH/" "$BUILD_APP_PATH/"
 		echo "copy $TARGET_APP_PATH to $BUILD_APP_PATH"
 	else 
+		checkApp "$DEMOTARGET_APP_PATH"
 		cp -rf "$DEMOTARGET_APP_PATH/" "$BUILD_APP_PATH/"
 	fi
 
@@ -169,8 +120,17 @@ function pack(){
 		mkdir -p "$TARGET_APP_FRAMEWORKS_PATH"
 	fi
 
-	cp -rf "$BUILT_PRODUCTS_DIR/lib""$TARGET_NAME""Dylib.dylib" "$TARGET_APP_FRAMEWORKS_PATH"
-	cp -rf "$FRAMEWORKS_TO_INJECT_PATH" "$TARGET_APP_FRAMEWORKS_PATH"
+	if [[ ${MONKEYDEV_INSERT_DYLIB} == "YES" ]];then
+		cp -rf "$BUILT_PRODUCTS_DIR/lib""$TARGET_NAME""Dylib.dylib" "$TARGET_APP_FRAMEWORKS_PATH"
+		cp -rf "$FRAMEWORKS_TO_INJECT_PATH" "$TARGET_APP_FRAMEWORKS_PATH"
+		if [[ ${MONKEYDEV_ADD_SUBSTRATE} != "YES" ]];then
+			rm -rf "$TARGET_APP_FRAMEWORKS_PATH/libsubstrate.dylib"
+		fi
+		if isRelease; then
+			rm -rf "$TARGET_APP_FRAMEWORKS_PATH"/RevealServer.framework
+			rm -rf "$TARGET_APP_FRAMEWORKS_PATH"/libcycript*
+		fi
+	fi
 
 	if [[ -d "$SRCROOT/$TARGET_NAME/Resources" ]]; then
 	 for file in "$SRCROOT/$TARGET_NAME/Resources"/*; do
@@ -187,14 +147,12 @@ function pack(){
 	# Inject the Dynamic Lib
 	APP_BINARY=`plutil -convert xml1 -o - $BUILD_APP_PATH/Info.plist | grep -A1 Exec | tail -n1 | cut -f2 -d\> | cut -f1 -d\<`
 
-	"$MONKEYPARSER" install -c load -p "@executable_path/Frameworks/lib""$TARGET_NAME""Dylib.dylib" -t "$BUILD_APP_PATH/$APP_BINARY"
-	"$MONKEYPARSER" unrestrict -t "$BUILD_APP_PATH/$APP_BINARY"
+	if [[ ${MONKEYDEV_INSERT_DYLIB} == "YES" ]];then
+		"$MONKEYPARSER" install -c load -p "@executable_path/Frameworks/lib""$TARGET_NAME""Dylib.dylib" -t "$BUILD_APP_PATH/$APP_BINARY"
+		"$MONKEYPARSER" unrestrict -t "$BUILD_APP_PATH/$APP_BINARY"
 
-	chmod +x "$BUILD_APP_PATH/$APP_BINARY"
-
-	# remove Plugin an Watch
-	rm -rf "$BUILD_APP_PATH/PlugIns" || true
-	rm -rf "$BUILD_APP_PATH/Watch" || true
+		chmod +x "$BUILD_APP_PATH/$APP_BINARY"
+	fi
 
 	# Update Info.plist for Target App
 	if [[ "$CUSTOM_DISPLAY_NAME" != "" ]]; then
@@ -246,13 +204,13 @@ function pack(){
 	if [[ -f "${SRCROOT}/../Pods/Target Support Files/Pods-""$TARGET_NAME""Dylib/Pods-""$TARGET_NAME""Dylib-resources.sh" ]]; then
 		source "${SRCROOT}/../Pods/Target Support Files/Pods-""$TARGET_NAME""Dylib/Pods-""$TARGET_NAME""Dylib-resources.sh"
 	fi
-
-	mv "$BUILD_APP_PATH/Info.plist" "$BUILD_APP_PATH/Info.plist.bak" 
 }
 
 if [[ "$1" == "codesign" ]]; then
-	mv "$BUILD_APP_PATH/Info.plist.bak" "$BUILD_APP_PATH/Info.plist" 
-	codesign "$BUILD_APP_PATH"
+	"$MONKEYPARSER" codesign -i "$EXPANDED_CODE_SIGN_IDENTITY" -t "$BUILD_APP_PATH"
+	if [[ ${MONKEYDEV_INSERT_DYLIB} == "NO" ]];then
+		rm -rf "$BUILD_APP_PATH/Frameworks/lib""$TARGET_NAME""Dylib.dylib"
+	fi
 else
 	pack
 fi
